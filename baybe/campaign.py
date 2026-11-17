@@ -31,6 +31,7 @@ from baybe.recommenders.meta.base import MetaRecommender
 from baybe.recommenders.meta.sequential import TwoPhaseMetaRecommender
 from baybe.recommenders.pure.bayesian.base import BayesianRecommender
 from baybe.recommenders.pure.nonpredictive.base import NonPredictiveRecommender
+from baybe.recommenders.pure.surrogate import SurrogateRecommender
 from baybe.searchspace._filtered import FilteredSubspaceDiscrete
 from baybe.searchspace.core import (
     SearchSpace,
@@ -558,12 +559,10 @@ class Campaign(SerialMixin):
                 not self.allow_recommending_pending_experiments
                 and pending_experiments is not None
             ):
-                mask_todrop |= pd.merge(
-                    self.searchspace.discrete.exp_rep,
-                    pending_experiments,
-                    indicator=True,
-                    how="left",
-                )["_merge"].eq("both")
+                parameter_names = list(self.searchspace.discrete.parameter_names)
+                mask_todrop |= pd.MultiIndex.from_frame(
+                    self.searchspace.discrete.exp_rep[parameter_names]
+                ).isin(pd.MultiIndex.from_frame(pending_experiments[parameter_names]))
             searchspace = evolve(
                 self.searchspace,
                 discrete=FilteredSubspaceDiscrete.from_subspace(
@@ -635,9 +634,11 @@ class Campaign(SerialMixin):
         ):
             self._cache_recommendation(rec)
 
-        # Update metadata
-        if self.searchspace.type in (SearchSpaceType.DISCRETE, SearchSpaceType.HYBRID):
-            self._searchspace_metadata.loc[rec.index, _RECOMMENDED] = True
+        if self.searchspace.type in (
+            SearchSpaceType.DISCRETE,
+            SearchSpaceType.HYBRID,
+        ):
+            self._searchspace_metadata.loc[rec.index.dropna(), _RECOMMENDED] = True
 
         return rec
 
@@ -750,7 +751,7 @@ class Campaign(SerialMixin):
             )
 
         recommender = self._get_non_meta_recommender(batch_size, pending_experiments)
-        if isinstance(recommender, BayesianRecommender):
+        if isinstance(recommender, SurrogateRecommender):
             return recommender.get_surrogate(
                 self.searchspace, self.objective, self.measurements
             )
@@ -759,7 +760,7 @@ class Campaign(SerialMixin):
                 f"The current recommender is of type "
                 f"'{recommender.__class__.__name__}', which does not provide "
                 f"a surrogate model. Surrogate models are only available for "
-                f"recommender subclasses of '{BayesianRecommender.__name__}'."
+                f"recommender subclasses of '{SurrogateRecommender.__name__}'."
             )
 
     def _get_non_meta_recommender(
